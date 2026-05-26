@@ -148,6 +148,10 @@ Terminal-only summary:
 ═══════════════════════════════════════════════════════════
 ```
 
+## Organization Card Integration
+
+When extracted actions reference an organization (e.g., "Follow up with [Acme] on contract", "Send Q3 report to [Distribuidora XYZ]"), call `/organization-card` in **Silent Update mode only** — never Create or Quick Add. The action-extraction skill enriches existing org cards with new context (last_contact, related-to project wikilinks, relationship state) but does NOT propose new org cards. New-org discovery belongs to `/meeting-minutes` Step 4.5 and `/session-close` Phase 2.4. If the referenced org has no existing card, leave it unenriched — the next session-close cycle will catch it.
+
 ## Rules
 
 ### Boundary Rules
