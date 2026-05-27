@@ -40,6 +40,8 @@ When invoked with `cron`, the skill runs without any user interaction.
 4. **No new briefs.** If a meeting matches no existing brief above the threshold, the meeting is logged as "unrouted" and skipped — never spawn a new brief.
 5. **No notifications.** Cron mode writes a terminal-only summary.
 
+> **Chained execution context (added 2026-05-27 per [[2026-05-27-cloud-cron-migration-v2-redirected]]):** When invoked from `/close-day` Phase Chain Phase C, this skill runs immediately after Phase A's `/meeting-minutes cron` writes new minutes to `00 HUB/00 INBOX/`. The existing Rule 1 ("Today-only source set") already handles this correctly — the freshly-written INBOX files match today's date suffix and are picked up by Step 1 naturally. No behavior change needed for the Phase Chain integration; this note exists for traceability so future maintainers see the dependency.
+
 ## Workflow
 
 ### Pre-flight: Synthesis-Status Check
