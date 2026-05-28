@@ -1,7 +1,7 @@
 ---
 name: action-extraction
-version: "0.2.0"
-description: "Propagate action items, waiting-for items, and decisions from today's meeting minutes into the relevant project/program briefs. Vault-only — no external notifications."
+version: "0.3.0"
+description: "Propagate action items, waiting-for items, and decisions from today's meeting minutes into the relevant project/program briefs. Cron: vault-only. Interactive: may also draft (never send) personalized minutes emails per participant with their decisions, assigned tasks, and Trello card links."
 user-invocable: true
 argument-hint: "optional: 'cron' for non-interactive scheduled run"
 ---
@@ -12,7 +12,7 @@ Take the meeting minutes created today by `meeting-minutes` and fan the structur
 
 - **Minutes are the source.** Do not re-read the Granola transcript. The `meeting-minutes` skill already extracted structured outputs; this skill routes them.
 - **Briefs are the destination.** Each meeting maps to zero, one, or more project/program briefs. Actions land in the matching brief's `## Next Actions`; waiting-for items land in `## Waiting For`; decisions go to `## Log`.
-- **No notifications.** Vault-only. No Discord, no Slack, no Telegram.
+- **No notifications in cron.** Cron mode is vault-only: no Discord, no Slack, no Telegram, no email. **Interactive mode** MAY additionally create Gmail **drafts** (never sends) for participants — see Step 7. The draft path is gated behind explicit per-meeting user selection and never runs in cron.
 
 ## Vault Exception
 
@@ -26,7 +26,9 @@ It does NOT:
 ## Inputs
 
 - **No argument** — interactive mode. Present candidate updates per meeting and ask for confirmation before each brief edit.
+  Interactive mode also offers Step 7 (Participant Minutes Emails) — per-meeting attendee selection and Gmail draft creation.
 - **"cron"** — non-interactive. Execute updates automatically using the matching heuristic below. No user prompts.
+  Cron NEVER drafts emails or touches Trello — Steps 4.5 and 7 are interactive-only.
 
 ## Cron Mode
 
@@ -118,6 +120,35 @@ The wikilink to the source minutes is MANDATORY — it follows the "Actionable o
 ```
 One entry per meeting per brief, never more.
 
+### Step 4.5 — Trello Card Linking (interactive only)
+
+**Skipped in cron mode.** For each matched brief that has Trello, resolve and link
+(or create) a card per owned action item so Step 7 can include card links.
+
+1. **Resolve the board.** Scan the matched brief's body for a Trello board URL of
+   the form `https://trello.com/b/<boardId>/...` (briefs store the board as a
+   markdown link, e.g. `[Trello Board CxC parent](https://trello.com/b/txNqZkxM/...)`).
+   - If found, extract `<boardId>` and call `mcp__trello__set_active_board` with it.
+   - If the brief has **no** board URL, ask the user once: which board (paste a
+     board URL/id) or skip Trello for this meeting. Never guess a board.
+2. **Per owned action item** (from the Step 4 Ownership Split):
+   1. List the board's cards (`mcp__trello__get_lists` → `mcp__trello__get_cards_by_list_id`,
+      active lists only per [[Trello List Filtering]] — skip Backlog/Listo/Cerrado/OKR/Recursos).
+   2. **Fuzzy-match** the action text against card names (lowercase, strip stop
+      words, ≥60% token overlap). If a card matches → record its
+      `https://trello.com/c/<shortLink>` URL.
+   3. **No match** → create a card (`mcp__trello__add_card_to_list` on the brief's
+      default "in-progress"/"Doing" active list; title = action text; due = the
+      item's due date if present). Record the new card's URL.
+   4. **Assign the owner:** `mcp__trello__get_board_members` → match by name. If the
+      owner is a board member → `mcp__trello__assign_member_to_card`. If NOT a board
+      member → leave the card unassigned and flag it (`{owner} not on board`) for
+      the Step 8 report.
+3. Keep an in-memory map `{action_item → trello_url}` for Step 7. Cards are plain
+   `https://trello.com/c/...` URLs (never wikilinks — they go into email bodies).
+
+**Idempotency:** if a card already matches (step 2.2), do not create a duplicate.
+
 ### Step 5 — Idempotency Check
 
 Before appending to Next Actions or Waiting For, scan the target section for exact-string duplicates. Skip any item whose action text already exists in the brief.
@@ -126,7 +157,88 @@ Before appending to Next Actions or Waiting For, scan the target section for exa
 
 Actions that can't be routed to any brief (no match ≥70) are reported in the terminal summary as "unrouted actions." They remain in the minutes file — the user can route them manually during their next review.
 
-### Step 7 — Report
+### Step 7 — Participant Minutes Emails (interactive only)
+
+**Skipped entirely in cron mode** (`if mode == cron: skip` — no recipient selection,
+no drafts). This step creates Gmail **drafts** (never sends) on the Bufalinda account,
+one per selected attendee, in Venezuelan Spanish (tuteo) per [[Venezuelan Spanish (tuteo)]].
+
+**For each processed meeting:**
+
+1. **Read decisions** from the minutes' `## Key Decisions` section (current
+   meeting-minutes template). These are shared context included in every draft for
+   that meeting.
+
+2. **Resolve attendee emails.** For each `attendees` entry (strip `[[ ]]`, match by
+   name — first name or full name): look up an email via
+   **Vault Contacts (`03 REFERENCE/IMPORTANT DOCS/Vault Contacts.md`, Name/Last Name → Email column)
+   → Google Contacts (gws) → Granola attendee metadata**. Attendees with no
+   resolvable email are listed as `— no email — skipped`.
+
+3. **Interactive selection.** Present the attendee list for this meeting. Pre-select
+   attendees who own ≥1 action item (from the Step 4 Ownership Split). Pure observers
+   are listed but unselected. The user confirms the selection. Build drafts only for
+   selected, email-resolved attendees.
+
+4. **Compose each draft** (plain text, no wikilinks, tuteo Spanish):
+
+   ```
+   Asunto: Minuta y tareas — {Meeting Title} — {YYYY-MM-DD}
+
+   Hola {Nombre},
+
+   Te comparto el resumen de lo que acordamos en {Meeting Title} ({fecha}) y las
+   tareas que quedaron a tu cargo.
+
+   Acuerdos clave
+   • {decisión 1}
+   • {decisión 2}
+
+   Tus tareas asignadas
+   • {acción 1} — vence {fecha o "sin fecha"} — {trello_url si aplica}
+   • {acción 2} — ...
+
+   ¿Confirmas recibido?
+
+   Por favor responde a este correo confirmando que recibiste la minuta y que
+   estás de acuerdo con los acuerdos y tus tareas asignadas. Si algo no refleja lo
+   conversado, respóndelo aquí y lo corregimos.
+
+   Gracias,
+   Alberto
+
+   —
+   Borrador asistido por Claude Code
+   ```
+
+   - Tasks come from the owner's slice of the Ownership Split; Trello URLs from the
+     Step 4.5 map. If the selected attendee owns no tasks, write
+     `• (sin tareas asignadas en esta reunión)`.
+   - If the meeting had no decisions, omit the `Acuerdos clave` section.
+
+5. **Create the draft** (never send). Write the body to a temp file and call the
+   shared helper in draft mode:
+
+   ```bash
+   python3 "{{VAULT_ROOT}}/05 AI/SHARED/scripts/send_email.py" \
+       --draft \
+       --to "{recipient_email}" \
+       --subject "Minuta y tareas — {Meeting Title} — {YYYY-MM-DD}" \
+       --body-file "{temp_body_path}" \
+       --account bufalinda
+   ```
+
+   The helper builds RFC-2047/UTF-8/quoted-printable MIME (no mojibake) and
+   verifies the created draft. **If the JSON result contains a `warnings` array,
+   surface it and treat the draft as suspect** — do not report it as clean.
+
+6. Collect per-draft results (draft id, recipient, task count, Trello cards touched,
+   any warnings) for the Step 8 report.
+
+**Boundary:** drafts only. This step NEVER calls `send`. The user reviews and sends
+each draft from Gmail per [[Email Sending Protocol]].
+
+### Step 8 — Report
 
 Terminal-only summary:
 
@@ -147,6 +259,15 @@ Terminal-only summary:
  [[Brief Name]] — +{N} actions
 
  Flags: N unrouted actions, N unowned actions
+
+ Participant drafts: {N} created, {M} skipped (no email)
+ ─────────────────────────────────────────────────────────
+ • {Nombre} <{email}> — {K} tareas, {T} Trello cards [draft: {draft_id}]
+ • {Nombre} — SKIPPED (no email resolved)
+
+ Trello: {created} cards created, {linked} linked, {unassigned} unassigned (not board member)
+
+ ⚠ Draft warnings: {any encoding/threading warnings, or "none"}
 ═══════════════════════════════════════════════════════════
 ```
 
@@ -169,7 +290,7 @@ When extracted actions reference an organization (e.g., "Follow up with [Acme] o
 
 ### Output Rules
 - **Every added item includes a wikilink to the source minutes** — required by the vault's "Actionable output navigation" convention.
-- **Terminal-only.** No Discord, Telegram, Slack, or INBOX report. Briefs and Log entries are the durable output.
+- **Cron output is terminal-only.** No Discord, Telegram, Slack, or INBOX report in cron. Briefs and Log entries are the durable vault output. Interactive mode additionally creates Gmail drafts (Step 7) — drafts are never auto-sent; the user reviews and sends them outside this skill per [[Email Sending Protocol]].
 
 ### Granularity Preservation Rule (added 2026-04-30)
 
@@ -197,6 +318,21 @@ When a meeting's outputs propagate across **brief + tracking sheet + minutes** (
 
 Shared capabilities from `_shared/nodes/` (resolve via `{{VAULT_ROOT}}/05 AI/CLAUDE CODE/skills/_shared/nodes/{name}.md`):
 - [[brief-updater]] — mode: task-insert, wf-update, log-entry
+
+### Interactive-mode (Step 4.5 + Step 7) additional dependencies
+- `05 AI/SHARED/scripts/send_email.py` — `create_draft()` / `--draft` for MIME-safe Gmail draft creation (Bufalinda account). See [[Email Sending Protocol]] and [[Wire-Level Verification]].
+- Trello MCP — `set_active_board`, `get_lists`, `get_cards_by_list_id`, `add_card_to_list`, `get_board_members`, `assign_member_to_card`. Honors [[Trello List Filtering]].
+- Vault Contacts (`03 REFERENCE/IMPORTANT DOCS/Vault Contacts.md`) + Google Contacts (gws) — recipient email resolution.
+
+### Vault Conventions
+- [[Email Sending Protocol]] — drafts only; user reviews/sends.
+- [[Venezuelan Spanish (tuteo)]] — all participant-email copy.
+- [[Wire-Level Verification]] — verify the created draft's bytes; never emit mojibake.
+- [[Trello List Filtering]] — active lists only.
+- [[Eisenhower Priority Mapping]] — due-date handling unchanged.
+
+### Does NOT Require
+- No send capability (drafts only). No Slack/Discord/Telegram. No new-brief creation.
 
 ## Related Skills
 - [[meeting-minutes]] — upstream: creates the minutes files this skill consumes.
