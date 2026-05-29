@@ -1,9 +1,13 @@
 {
-    "bundled_at": "2026-05-08T20:29:32Z",
+    "bundled_at": "2026-05-29T01:55:04Z",
     "nodes": {
         "brief-updater": {
             "version": 1,
             "source_hash": "6d30b98cb33c"
+        },
+        "correction-capture": {
+            "version": 2,
+            "source_hash": "9a611898b79a"
         }
     }
 }

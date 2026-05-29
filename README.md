@@ -1,8 +1,8 @@
 # action-extraction
 
-> Propagate action items, waiting-for items, and decisions from today's meeting minutes into the relevant project/program briefs. Vault-only — no external notifications.
+> Propagate action items, waiting-for items, and decisions from today's meeting minutes into the relevant project/program briefs. Cron: vault-only. Interactive: may also draft (never send) personalized minutes emails per participant with their decisions, assigned tasks, and Trello card links.
 
-**Version:** 0.2.0
+**Version:** 0.4.0
 
 ## Installation
 
@@ -22,4 +22,9 @@ Invoke in Claude Code:
 ## Files
 
 - `SKILL.md`
+- `_bundled/manifest.json`
+- `_bundled/nodes/brief-updater.md`
+- `docs/2026-05-28-participant-minutes-emails-design.md`
+- `docs/2026-05-28-participant-minutes-emails-plan.md`
+- `learned-overrides.md`
 

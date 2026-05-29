@@ -1,6 +1,6 @@
 ---
 name: action-extraction
-version: "0.3.0"
+version: "0.4.0"
 description: "Propagate action items, waiting-for items, and decisions from today's meeting minutes into the relevant project/program briefs. Cron: vault-only. Interactive: may also draft (never send) personalized minutes emails per participant with their decisions, assigned tasks, and Trello card links."
 user-invocable: true
 argument-hint: "optional: 'cron' for non-interactive scheduled run"
@@ -44,6 +44,14 @@ When invoked with `cron`, the skill runs without any user interaction.
 
 > **Chained execution context (added 2026-05-27 per [[2026-05-27-cloud-cron-migration-v2-redirected]]):** When invoked from `/close-day` Phase Chain Phase C, this skill runs immediately after Phase A's `/meeting-minutes cron` writes new minutes to `00 HUB/00 INBOX/`. The existing Rule 1 ("Today-only source set") already handles this correctly — the freshly-written INBOX files match today's date suffix and are picked up by Step 1 naturally. No behavior change needed for the Phase Chain integration; this note exists for traceability so future maintainers see the dependency.
 
+## Learned Overrides
+
+Stable routing preferences learned from user corrections live in this skill's **`learned-overrides.md`**, managed by the [[correction-capture]] node. The matching step (Step 3) MUST load that file and apply any matching rule **before** the Matching Heuristic scores candidates — a matching learned override is the highest-priority routing decision. This load applies in **both interactive and cron mode**: applying learned overrides improves the automatic match too.
+
+The file grows automatically from **in-run interactive overrides** — when the user reroutes a proposed meeting→brief assignment or re-owns an action item (Next Actions ↔ Waiting For) during the interactive run, Step 4's Correction Capture diffs proposed-vs-chosen and codifies clear corrections. This is the active form of [[Memory on Triage]].
+
+> **Detached-surface limitation:** post-run brief-edit reroutes are out of scope for this capture; catching them would require a separate post-hoc brief-diff mechanism (deferred design — not wired here). The user most often corrects action-extraction *after* the run by editing a brief to move or re-own an action item days later, and an end-of-run capture cannot see those edits. The wired surface is the load step (both modes) plus in-run interactive overrides only.
+
 ## Workflow
 
 ### Pre-flight: Synthesis-Status Check
@@ -82,6 +90,8 @@ For each file, extract the structured sections:
 
 ### Step 3 — Match Each Meeting to Briefs (Matching Heuristic)
 
+0. **Apply learned overrides** (both modes) — Load `action-extraction/learned-overrides.md`. If a rule matches this meeting (by meeting title / attendee → brief, or by action-item phrasing → Next Actions vs Waiting For ownership), apply it at **HIGH** confidence (treated as ≥70, clearing the confidence floor) and record `Learned Override: <rule>` alongside the routing decision. The Matching Heuristic below only scores candidates the loaded rules do not already resolve. This load runs in **both interactive and cron mode** — learned overrides improve the automatic match too.
+
 For each meeting, find the best-matching project or program brief. Score candidates 0-100:
 
 1. **Agenda linkage (strongest signal, +60)** — If `agenda:` frontmatter is set, read the agenda and check its `## Key References` for project/program wikilinks. Each linked brief is a direct candidate.
@@ -119,6 +129,21 @@ The wikilink to the source minutes is MANDATORY — it follows the "Actionable o
 - {YYYY-MM-DD} — Meeting: {Meeting Title} — {N} actions added, {N} WF items, {N} decisions. See [[Meeting Minutes — TITLE — YYYY-MM-DD]]
 ```
 One entry per meeting per brief, never more.
+
+#### Step 4 — Correction Capture (interactive mode only)
+
+**`if mode == cron: skip this step entirely.`** In cron/automatic mode there is no manifest and nothing to diff — routing was automatic — so Correction Capture does NOT run. The step is interactive-only; it only fires when the user approved/edited per-brief assignments in this run.
+
+This is what makes the skill learn. After the user has confirmed all per-brief assignments (and any re-ownership of action items), build a normalized `corrections[]` by diffing each routed item's **proposed** disposition (the meeting→brief match + Next Actions/Waiting For ownership the skill proposed in Step 3/4) against the **chosen** disposition (what the user actually approved):
+- User routed an action item to a different brief than the heuristic proposed (or resolved an ambiguous <70 match the skill would have skipped) → `signal: destination-override` (`destination:` = chosen brief path).
+- User moved an item across the ownership split — Next Actions ↔ Waiting For — overriding the proposed owner placement → `signal: reclassification`.
+- Assignment accepted as proposed → confirmation; NOT logged.
+
+Set `generalizable_key` where one is inferable (e.g. `meeting-title~"..."`, `attendee:<name>`, `action-phrasing~"..."`).
+
+Then invoke the [[correction-capture]] node (`mode: capture`) with `skill: action-extraction` and this list. It appends rows to `action-extraction/_corrections-log.md`, auto-applies clear meeting/attendee→brief and action-phrasing→ownership rules to `action-extraction/learned-overrides.md` (and writes a `feedback_*.md` memory + MEMORY.md pointer for cross-skill rules), proposes ambiguous ones, and returns "🧠 Learned This Run" + "💾 Memory Updates" blocks. Append both to the Step 8 report. Auto-applied rules change the **next** run's Step 3 routing immediately — including the next cron run, since Step 3's load step is mode-agnostic.
+
+> **Detached-surface limitation (repeated for the maintainer reading this step):** this capture sees only in-run interactive overrides. Post-run brief-edit reroutes — the user moving or re-owning an action item by editing a brief days later — are NOT visible here and are out of scope; catching them would require a separate post-hoc brief-diff mechanism (deferred — not wired).
 
 ### Step 4.5 — Trello Card Linking (interactive only)
 
@@ -291,6 +316,7 @@ When extracted actions reference an organization (e.g., "Follow up with [Acme] o
 ### Output Rules
 - **Every added item includes a wikilink to the source minutes** — required by the vault's "Actionable output navigation" convention.
 - **Cron output is terminal-only.** No Discord, Telegram, Slack, or INBOX report in cron. Briefs and Log entries are the durable vault output. Interactive mode additionally creates Gmail drafts (Step 7) — drafts are never auto-sent; the user reviews and sends them outside this skill per [[Email Sending Protocol]].
+- **Self-improving.** Step 3 loads `learned-overrides.md` and applies matching meeting/attendee→brief and action-phrasing→ownership rules **before** the Matching Heuristic, in **both modes**. Correction Capture ([[correction-capture]] mode: capture) runs at the end of Step 4 **interactive mode only** — `if mode == cron: skip`, since cron has no manifest to diff — logging proposed-vs-chosen `destination-override` / `reclassification` corrections to `_corrections-log.md` and auto-codifying clear ones into `learned-overrides.md`. **Detached-surface limitation:** post-run brief-edit reroutes (the user re-owning/moving an item days later) are out of scope — catching them needs a separate post-hoc brief-diff mechanism (deferred, not wired). Recurring un-codified corrections (≥2) are promoted at `/retro` (mode: consolidate). This is the active form of [[Memory on Triage]].
 
 ### Granularity Preservation Rule (added 2026-04-30)
 
@@ -318,6 +344,7 @@ When a meeting's outputs propagate across **brief + tracking sheet + minutes** (
 
 Shared capabilities from `_shared/nodes/` (resolve via `{{VAULT_ROOT}}/05 AI/CLAUDE CODE/skills/_shared/nodes/{name}.md`):
 - [[brief-updater]] — mode: task-insert, wf-update, log-entry
+- [[correction-capture]] — mode: capture (Step 4 interactive-mode self-improvement loop); mode: consolidate (run from /retro)
 
 ### Interactive-mode (Step 4.5 + Step 7) additional dependencies
 - `05 AI/SHARED/scripts/send_email.py` — `create_draft()` / `--draft` for MIME-safe Gmail draft creation (Bufalinda account). See [[Email Sending Protocol]] and [[Wire-Level Verification]].
