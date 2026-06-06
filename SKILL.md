@@ -1,7 +1,7 @@
 ---
 name: action-extraction
-version: "0.4.0"
-description: "Propagate action items, waiting-for items, and decisions from today's meeting minutes into the relevant project/program briefs. Cron: vault-only. Interactive: may also draft (never send) personalized minutes emails per participant with their decisions, assigned tasks, and Trello card links."
+version: "0.5.1"
+description: "Propagate action items, waiting-for items, and decisions from today's meeting minutes into the relevant project/program briefs. Cron: vault-only. Interactive: may also draft (never send) personalized minutes emails per participant with their decisions, assigned tasks, and Trello card links. v0.5.0: Step 1.5 delegates `{@ ...}` comment harvesting to /meeting-minutes harvest on today's minutes BEFORE routing, so action-reroute corrections apply before propagation."
 user-invocable: true
 argument-hint: "optional: 'cron' for non-interactive scheduled run"
 ---
@@ -11,6 +11,7 @@ Take the meeting minutes created today by `meeting-minutes` and fan the structur
 ## Philosophy
 
 - **Minutes are the source.** Do not re-read the Granola transcript. The `meeting-minutes` skill already extracted structured outputs; this skill routes them.
+- **Harvest corrections before routing.** Before parsing, hand today's minutes to `/meeting-minutes harvest` (Step 1.5) so the user's inline `{@ ...}` comments — especially `action-reroute` ("this is JC's not mine") — are applied first. Routing the *corrected* minutes prevents propagating an action to the wrong owner or brief, and lets durable corrections feed memory + AREA files.
 - **Briefs are the destination.** Each meeting maps to zero, one, or more project/program briefs. Actions land in the matching brief's `## Next Actions`; waiting-for items land in `## Waiting For`; decisions go to `## Log`.
 - **No notifications in cron.** Cron mode is vault-only: no Discord, no Slack, no Telegram, no email. **Interactive mode** MAY additionally create Gmail **drafts** (never sends) for participants — see Step 7. The draft path is gated behind explicit per-meeting user selection and never runs in cron.
 
@@ -18,10 +19,10 @@ Take the meeting minutes created today by `meeting-minutes` and fan the structur
 
 This skill MAY modify existing files in `01 PROJECTS/` and `02 AREAS/` — specifically project/program briefs. It appends to the Next Actions, Waiting For, and Log sections. It does not delete or rewrite existing content.
 
-It does NOT:
+It does NOT directly:
 - Create new briefs
-- Modify meeting minutes files themselves
-- Touch anything outside `01 PROJECTS/` and `02 AREAS/`
+- Edit meeting minutes files with its own hands — **but** in Step 1.5 it delegates `{@ ...}` comment harvesting to `/meeting-minutes harvest`, which may edit today's minutes (apply + remove resolved comments) and additively enrich AREA/wiki files. The minutes edit is owned by `/meeting-minutes`; action-extraction only invokes it.
+- Touch anything outside `01 PROJECTS/` and `02 AREAS/` (except via the delegated Step 1.5 harvest above)
 
 ## Inputs
 
@@ -41,6 +42,7 @@ When invoked with `cron`, the skill runs without any user interaction.
 3. **Idempotency.** Before appending, check whether the action item text already exists in the target brief's Next Actions / Waiting For. Skip exact-string duplicates.
 4. **No new briefs.** If a meeting matches no existing brief above the threshold, the meeting is logged as "unrouted" and skipped — never spawn a new brief.
 5. **No notifications.** Cron mode writes a terminal-only summary.
+6. **Harvest before routing (Step 1.5).** Run the `{@ ...}` harvest on today's `synthesis_status: complete` minutes before Step 2, delegating to `/meeting-minutes harvest`. Apply clear directives + additive AREA enrichments automatically; surface ambiguous/structural/conflicting ones in the terminal summary. Never prompt. This guarantees `action-reroute` corrections apply before propagation even in the unattended `/close-day` Phase-Chain run.
 
 > **Chained execution context (added 2026-05-27 per [[2026-05-27-cloud-cron-migration-v2-redirected]]):** When invoked from `/close-day` Phase Chain Phase C, this skill runs immediately after Phase A's `/meeting-minutes cron` writes new minutes to `00 HUB/00 INBOX/`. The existing Rule 1 ("Today-only source set") already handles this correctly — the freshly-written INBOX files match today's date suffix and are picked up by Step 1 naturally. No behavior change needed for the Phase Chain integration; this note exists for traceability so future maintainers see the dependency.
 
@@ -77,6 +79,18 @@ Before parsing any Meeting Minutes file as input, check its frontmatter for `syn
 1. Resolve the vault root from the CLAUDE.md chain.
 2. List files in `00 HUB/00 INBOX/` matching `Meeting Minutes — * — YYYY-MM-DD.md` where the date suffix matches today.
 3. If zero files found, write a one-line summary and exit.
+
+### Step 1.5 — Harvest `{@ ...}` Comments on Today's Minutes (pre-routing)
+
+Before parsing, run the `/meeting-minutes` harvest over today's minutes so the user's inline `{@ ...}` corrections are applied **first** — this is the automatic daily trigger for `/meeting-minutes` Step 6.5. The point is ordering: an `action-reroute` comment (`{@ this is JC's not mine}`, `{@ goes to the Cusica project}`) must change the item's owner/target **before** Step 4 propagates it, or the action lands in the wrong brief.
+
+1. **Scope to today's complete minutes only.** From the Step 1 file list, keep those with `synthesis_status: complete` (or absent — legacy) per the Pre-flight check; never harvest a `pending` stub.
+2. **Skip if no comments.** Grep the set for `{@` — if none contain a comment, skip this step silently (the common case; near-zero cost).
+3. **Delegate the harvest.** For the files that do contain `{@ ...}` spans, invoke `/meeting-minutes harvest` scoped to today's minutes (the action-extraction-invoked path in `/meeting-minutes` Harvest Mode / Step 6.5). It applies each comment to the minutes file, re-owns/re-routes action & waiting-for items per the ownership-split rule, additively enriches AREA/wiki files with `fact`-intent comments, captures the learnings via [[correction-capture]] (writing `meeting-minutes/learned-overrides.md` + ledger), and removes each resolved comment. **action-extraction does not edit the minutes itself** — it only invokes the harvest (see Vault Exception).
+4. **Auto/surface split.** Headless (cron / Phase-Chain): auto-apply clear directives + additive enrichments, surface the rest in this run's summary — never prompt. Interactive: `/meeting-minutes` surfaces ambiguous comments for the user.
+5. **Then re-read.** Step 2 parses the **post-harvest** minutes, so the routed actions reflect the corrected owners/targets.
+
+> **Why before Step 2, not after Step 4:** routing first and correcting later would propagate the wrong owner into a brief, then require a second pass to undo it. Harvesting up front makes the corrected minutes the single source the rest of the run reads. Comments left unresolved (surfaced) stay in the minutes file for the next interactive pass.
 
 ### Step 2 — Parse Each Minutes File
 
@@ -278,6 +292,10 @@ Terminal-only summary:
  • {Meeting Title} → {Brief Name}: +{N} actions, +{N} WF
  • {Meeting Title} → UNROUTED (no brief match ≥70)
 
+ Comments harvested (Step 1.5): {A} applied, {S} surfaced
+ ─────────────────────────────────────────────────────────
+ • {Meeting Title}: {A} applied (corrections/action-reroutes/facts), {S} surfaced; AREA enriched: {file or —}
+
  Briefs updated: N
  ─────────────────────────────────────────────────────────
  [[Brief Name]] — +{N} actions, +{N} WF
@@ -303,7 +321,7 @@ When extracted actions reference an organization (e.g., "Follow up with [Acme] o
 ## Rules
 
 ### Boundary Rules
-- **Read-only on minutes files.** Never modify files in `00 HUB/00 INBOX/`.
+- **Read-only on minutes files (with its own hands).** action-extraction never edits files in `00 HUB/00 INBOX/` directly. The sole exception is Step 1.5, which *delegates* `{@ ...}` harvesting to `/meeting-minutes harvest` — that skill owns the edit (apply directive + remove the resolved comment); action-extraction only invokes it, then re-reads the corrected file in Step 2.
 - **Append-only on briefs.** Never delete or rewrite existing Next Actions, WF items, or Log entries. Only add new rows.
 - **Never create briefs.** If no match, flag and skip — do not spawn new files.
 - **Preserve formatting.** Match the existing indentation, bullet style, and table format of each target brief.
@@ -362,5 +380,5 @@ Shared capabilities from `_shared/nodes/` (resolve via `{{VAULT_ROOT}}/05 AI/CLA
 - No send capability (drafts only). No Slack/Discord/Telegram. No new-brief creation.
 
 ## Related Skills
-- [[meeting-minutes]] — upstream: creates the minutes files this skill consumes.
+- [[meeting-minutes]] — upstream: creates the minutes files this skill consumes; Step 1.5 also invokes its `harvest` mode (Step 6.5) on today's minutes before routing, so `{@ ...}` corrections (esp. `action-reroute`) apply first.
 - [[followup]] — downstream: picks up the Waiting For items we add.

@@ -31,11 +31,12 @@ Cross-skill rules additionally write a global `feedback_*.md` memory + `MEMORY.m
 # <skill> Corrections Log — appended by correction-capture (mode: capture). Rows >1yr → _corrections-log-archive.md.
 # date | item | proposed | chosen | destination | signal | codified
 2026-05-28 | [[Morning Briefing 2026-05-28]] | ROUTE TO READ_REVIEW | ROUTE TO REFERENCE | 03 REFERENCE/PERSONAL/LIFE OS/DAILY NOTES/ | disposition-override | auto
-2026-05-28 | [[Valdeagua quote]] | ROUTE TO READ_REVIEW | ROUTE TO AREA | 02 AREAS/03 BUSINESS/ | disposition-override | proposed
+2026-05-28 | [[Valdeagua quote]] | ROUTE TO READ_REVIEW | ROUTE TO AREA | 02 AREAS/06 BUSINESS/ | disposition-override | proposed
 ```
 
-- `signal ∈ { disposition-override, destination-override, reclassification, rejection, draft-voice }`
+- `signal ∈ { disposition-override, destination-override, reclassification, rejection, draft-voice, auto-action-rollback }`
 - `codified ∈ { auto, proposed, no }`
+- `auto-action-rollback` (inbox-clear Phase 1.5): the user rolled back an auto-executed move. `proposed` = the auto-disposition that fired, `chosen` = INBOX (or the `{@ ROLLBACK to:}` override). Ledger-only per run; ≥2 rollbacks of the same allowlist rule at consolidation → propose tightening/removing that rule.
 
 ### Learned-overrides schema (`learned-overrides.md`)
 
@@ -96,7 +97,7 @@ Cross-skill rules additionally write a global `feedback_*.md` memory + `MEMORY.m
 - `filename ~ "morning briefing"` → ROUTE TO REFERENCE · DAILY NOTES — from [[note]]
   · undo: remove this entry from <skill>/learned-overrides.md
 **Proposed (tick [x] to apply next run):**
-- [ ] `domain:valdeagua.com` → ROUTE TO AREA · 02 AREAS/03 BUSINESS/ — from [[note]] (judgment call)
+- [ ] `domain:valdeagua.com` → ROUTE TO AREA · 02 AREAS/06 BUSINESS/ — from [[note]] (judgment call)
 **Conflicts (resolve manually):**
 - `source-type:x.com` proposed → REFERENCE but active rule says READ_REVIEW — kept active; see learned-overrides.md
 
@@ -163,6 +164,8 @@ If `corrections[]` is empty: append `_No corrections this run — 0 learned._` a
 - [[clean-projects]] — capture (Phase 2; reclassification/rejection — instance-specific re-parents stay ledger-only)
 - [[clean-areas]] — capture (Phase 2; disposition/reclassification on linking — mostly ledger-only)
 - [[clean-reference]] — capture (Phase 2; destination-override — seeded with the archive-default rule)
+- [[meeting-agenda]] — capture (Step 4.5; harvests inline `{@ ...}` comments on recurring agendas. Extends the signal set with `content-correction` / `content-add` / `generation-instruction` / `fact` / `one-off`; `generation-instruction` codifies to learned-overrides, cross-cutting `fact` enriches the vault AREA/wiki source of truth, rolled out 2026-06-06)
+- [[meeting-minutes]] — capture (Step 6.5; harvests inline `{@ ...}` comments on existing minutes. Same signal set as meeting-agenda plus `action-reroute` (corrects a Next-Action/Waiting-For owner before `/action-extraction` propagates it). Learned `generation-instruction`s are preloaded by Step 4 so future minutes inherit corrections; `/action-extraction` is the recommended automatic harvest trigger, rolled out 2026-06-06)
 
 **Tier 3** (rolled out 2026-05-28):
 - [[startup-day]] — capture (Step 5 Q1 override; daily picks ledger-only, only recurring task→priority patterns codify)
